@@ -1,0 +1,61 @@
+name: 'Deptools Scan'
+description: 'Trigger a Deptools dependency scan and optionally gate your CI on the result'
+author: 'Deptools'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  project-id:
+    description: 'Your Deptools project UUID'
+    required: true
+  api-key:
+    description: 'Your Deptools API key (store as a secret)'
+    required: true
+  wait-for-result:
+    description: 'Block the job until the scan completes'
+    required: false
+    default: 'false'
+  fail-on-cvss:
+    description: 'Fail the job if a vulnerability at or above this severity is found (CRITICAL, HIGH, MODERATE, LOW)'
+    required: false
+    default: ''
+  min-score:
+    description: 'Fail the job if the overall Deptools score is below this value (0-10)'
+    required: false
+    default: ''
+  fail-on-strong-copyleft:
+    description: 'Fail the job if any dependency has a strong copyleft license (e.g. GPL)'
+    required: false
+    default: 'false'
+  min-up-to-date:
+    description: 'Fail the job if the percentage of direct dependencies on their latest version is below this value (0-100)'
+    required: false
+    default: ''
+  timeout:
+    description: 'Maximum seconds to wait for the scan to complete (only used when wait-for-result is true)'
+    required: false
+    default: '300'
+  api-url:
+    description: 'Deptools API base URL (override for self-hosted or staging environments)'
+    required: false
+    default: 'https://api.deptools.io'
+
+outputs:
+  job-id:
+    description: 'The scan job UUID returned by the API'
+  status:
+    description: 'Final scan status: running | completed | failed | skipped'
+  overall-score:
+    description: 'Overall Deptools score (0-10), populated when wait-for-result is true and scan completed'
+  poll-url:
+    description: 'URL to poll for scan status'
+  commercial-use:
+    description: 'true if at least one dependency has a strong copyleft license, populated when wait-for-result is true and scan completed'
+  direct-up-to-date:
+    description: 'Percentage of direct dependencies on their latest version (0-100), populated when wait-for-result is true and scan completed'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
