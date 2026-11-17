@@ -1,5 +1,5 @@
 name: 'Deptools Scan'
-description: 'Trigger a Deptools dependency scan and optionally gate your CI on the result'
+description: 'Trigger a Deptools dependency scan, optionally gate your CI on the result and download the SBOM'
 author: 'Deptools'
 
 branding:
@@ -41,6 +41,22 @@ inputs:
     description: 'Deptools API base URL (override for self-hosted or staging environments)'
     required: false
     default: 'https://api.deptools.io'
+  version:
+    description: 'Product version written in the SBOM (e.g. 2.4.0). The scan analyzes the branch configured on the Deptools project, not the ref of this job: only pass a version that matches that branch.'
+    required: false
+    default: ''
+  sbom-format:
+    description: 'Download the SBOM of the scan once it completes: cyclonedx or spdx. Implies wait-for-result.'
+    required: false
+    default: ''
+  sbom-path:
+    description: 'Where to write the SBOM, relative to the workspace (default: deptools-sbom.cdx.json or deptools-sbom.spdx.json)'
+    required: false
+    default: ''
+  fail-on-sbom-error:
+    description: 'Fail the job if the SBOM cannot be downloaded (default: a warning, since the scan itself succeeded)'
+    required: false
+    default: 'false'
 
 outputs:
   job-id:
@@ -55,7 +71,9 @@ outputs:
     description: 'true if at least one dependency has a strong copyleft license, populated when wait-for-result is true and scan completed'
   direct-up-to-date:
     description: 'Percentage of direct dependencies on their latest version (0-100), populated when wait-for-result is true and scan completed'
+  sbom-file:
+    description: 'Absolute path of the downloaded SBOM, empty when sbom-format is set but no SBOM could be downloaded'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
