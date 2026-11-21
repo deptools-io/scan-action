@@ -59,6 +59,23 @@ Set `sbom-format` to download the SBOM once the scan completes (this implies `wa
 
 `version` is written in the SBOM as the version of your product. Deptools scans the branch configured on the project, not the ref of the job: on a tag build, only pass the tag as `version` when the tag points at that branch, otherwise the SBOM would describe the branch under the tag's version.
 
+### Put the hash of your build in the SBOM
+
+The CRA guidance BSI TR-03183-2 asks the SBOM for the SHA-512 of the file you ship. Run the action **after** the step that builds it and point `artifact` at the file: the action computes its name and SHA-512 on the runner and sends only those, never the file.
+
+```yaml
+- run: mvn -B package
+- uses: deptools-io/scan-action@v1
+  with:
+    project-id: ${{ secrets.DEPTOOLS_PROJECT_ID }}
+    api-key: ${{ secrets.DEPTOOLS_API_KEY }}
+    sbom-format: cyclonedx
+    artifact: target/app-2.4.0.jar
+    # artifact-url: https://github.com/acme/app/releases/download/v2.4.0/app-2.4.0.jar
+```
+
+Optional in every way: a missing file gives a warning and the scan runs without it. The hash describes the file this job built, while Deptools scans the branch configured on the project: send it from a build of that branch. You are responsible for the values you send.
+
 ### Full example workflow
 
 ```yaml
@@ -102,6 +119,8 @@ jobs:
 | `sbom-format` | | — | Download the SBOM once the scan completes: `cyclonedx` or `spdx`. Implies `wait-for-result: true` |
 | `sbom-path` | | `deptools-sbom.cdx.json` / `deptools-sbom.spdx.json` | Where to write the SBOM, relative to the workspace (missing directories are created) |
 | `fail-on-sbom-error` | | `false` | Fail the job if the SBOM cannot be downloaded (otherwise a warning, since the scan succeeded) |
+| `artifact` | | — | Path of the file this job built, relative to the workspace. Its name and SHA-512 go in the SBOM for your product; the file is never sent. A missing file is a warning |
+| `artifact-url` | | — | Where that file can be downloaded, written in the SBOM |
 
 ## Outputs
 

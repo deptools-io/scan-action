@@ -53,6 +53,14 @@ inputs:
     description: 'Where to write the SBOM, relative to the workspace (default: deptools-sbom.cdx.json or deptools-sbom.spdx.json)'
     required: false
     default: ''
+  artifact:
+    description: 'Path of the file this job built (relative to the workspace), e.g. target/app-2.4.0.jar. Its name and SHA-512 are computed here and written in the SBOM for your product; the file itself is never sent. Run this step after the build. A missing file gives a warning, never a failed job.'
+    required: false
+    default: ''
+  artifact-url:
+    description: 'Where that file can be downloaded (e.g. its release asset URL), written in the SBOM'
+    required: false
+    default: ''
   fail-on-sbom-error:
     description: 'Fail the job if the SBOM cannot be downloaded (default: a warning, since the scan itself succeeded)'
     required: false

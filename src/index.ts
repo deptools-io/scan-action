@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as http from '@actions/http-client'
-import { promises as fs } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { createReadStream, promises as fs } from 'node:fs'
 import * as path from 'node:path'
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -70,6 +71,8 @@ async function run(): Promise<void> {
   const sbomFormatInput = core.getInput('sbom-format').trim().toLowerCase()
   const sbomPathInput = core.getInput('sbom-path').trim()
   const failOnSbomError = core.getInput('fail-on-sbom-error') === 'true'
+  const artifactInput = core.getInput('artifact').trim()
+  const artifactUrl = core.getInput('artifact-url').trim()
 
   // Mask the API key in all logs
   core.setSecret(apiKey)
@@ -105,9 +108,20 @@ async function run(): Promise<void> {
   core.info(`Triggering Deptools scan for project ${projectId}…`)
   if (version) core.info(`Product version: ${version}`)
 
+  // The file this job built, for the SBOM's product: its name and SHA-512, computed here, never the
+  // file itself. Optional, and never a reason to fail the job: a problem is a warning.
+  const artifact = artifactInput ? await describeArtifact(artifactInput) : null
+  if (artifact) core.info(`Artifact: ${artifact.artifactName} (sha512 ${artifact.artifactSha512})`)
+
+  // Only the fields that are set: without the new inputs, the body is exactly what v1.1.0 sent
+  const body = {
+    ...(version && { version }),
+    ...artifact,
+    ...(artifactUrl && { artifactUrl }),
+  }
   const triggerRes = await client.post(
     `${apiUrl}/v1/projects/${projectId}/scan`,
-    JSON.stringify(version ? { version } : {})
+    JSON.stringify(body)
   )
   const triggerStatus = triggerRes.message.statusCode ?? 0
   const triggerBody = parseJson(await triggerRes.readBody())
@@ -274,6 +288,30 @@ function parseJson(text: string): unknown {
   try {
     return text ? JSON.parse(text) : null
   } catch {
+    return null
+  }
+}
+
+/**
+ * Name and SHA-512 of the artifact this job built, the path relative to the workspace. The file is
+ * read as a stream, whatever its size; nothing is written. Null, with a warning, when it cannot be
+ * read: the scan goes on without it.
+ */
+async function describeArtifact(
+  input: string
+): Promise<{ artifactName: string; artifactSha512: string } | null> {
+  const file = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), input)
+  try {
+    const stat = await fs.stat(file)
+    if (!stat.isFile()) throw new Error('not a file')
+    const hash = createHash('sha512')
+    for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer)
+    return { artifactName: path.basename(file), artifactSha512: hash.digest('hex') }
+  } catch (error) {
+    core.warning(
+      `Could not read the artifact ${input} (${(error as Error).message}): the scan goes on ` +
+        'without it. Run this step after the step that builds the file.'
+    )
     return null
   }
 }

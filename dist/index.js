@@ -20295,6 +20295,7 @@ function info(message) {
 }
 
 // src/index.ts
+var import_node_crypto = require("node:crypto");
 var import_node_fs = require("node:fs");
 var path = __toESM(require("node:path"));
 var SEVERITY_RANK = {
@@ -20325,6 +20326,8 @@ async function run() {
   const sbomFormatInput = getInput("sbom-format").trim().toLowerCase();
   const sbomPathInput = getInput("sbom-path").trim();
   const failOnSbomError = getInput("fail-on-sbom-error") === "true";
+  const artifactInput = getInput("artifact").trim();
+  const artifactUrl = getInput("artifact-url").trim();
   setSecret(apiKey);
   if (sbomFormatInput && !SBOM_FORMATS.includes(sbomFormatInput)) {
     setFailed(`Invalid sbom-format "${sbomFormatInput}". Valid values: cyclonedx, spdx`);
@@ -20347,9 +20350,16 @@ async function run() {
   });
   info(`Triggering Deptools scan for project ${projectId}\u2026`);
   if (version) info(`Product version: ${version}`);
+  const artifact = artifactInput ? await describeArtifact(artifactInput) : null;
+  if (artifact) info(`Artifact: ${artifact.artifactName} (sha512 ${artifact.artifactSha512})`);
+  const body = {
+    ...version && { version },
+    ...artifact,
+    ...artifactUrl && { artifactUrl }
+  };
   const triggerRes = await client.post(
     `${apiUrl}/v1/projects/${projectId}/scan`,
-    JSON.stringify(version ? { version } : {})
+    JSON.stringify(body)
   );
   const triggerStatus = triggerRes.message.statusCode ?? 0;
   const triggerBody = parseJson(await triggerRes.readBody());
@@ -20476,6 +20486,21 @@ function parseJson(text) {
   try {
     return text ? JSON.parse(text) : null;
   } catch {
+    return null;
+  }
+}
+async function describeArtifact(input) {
+  const file = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), input);
+  try {
+    const stat2 = await import_node_fs.promises.stat(file);
+    if (!stat2.isFile()) throw new Error("not a file");
+    const hash = (0, import_node_crypto.createHash)("sha512");
+    for await (const chunk of (0, import_node_fs.createReadStream)(file)) hash.update(chunk);
+    return { artifactName: path.basename(file), artifactSha512: hash.digest("hex") };
+  } catch (error2) {
+    warning(
+      `Could not read the artifact ${input} (${error2.message}): the scan goes on without it. Run this step after the step that builds the file.`
+    );
     return null;
   }
 }
