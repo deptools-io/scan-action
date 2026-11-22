@@ -1,6 +1,6 @@
 {
   "name": "deptools-scan-action",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "GitHub Action to trigger a Deptools scan and gate CI on the result",
   "main": "dist/index.js",
   "scripts": {

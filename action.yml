@@ -65,6 +65,18 @@ inputs:
     description: 'Fail the job if the SBOM cannot be downloaded (default: a warning, since the scan itself succeeded)'
     required: false
     default: 'false'
+  vex:
+    description: 'Download the pre-filled VEX of the scan once it completes (CycloneDX: the known vulnerabilities of the components, for you to assess). Works with or without sbom-format. Implies wait-for-result.'
+    required: false
+    default: 'false'
+  vex-path:
+    description: 'Where to write the VEX, relative to the workspace (default: deptools-vex.cdx.json)'
+    required: false
+    default: ''
+  fail-on-vex-error:
+    description: 'Fail the job if the VEX cannot be downloaded (default: a warning, since the scan itself succeeded)'
+    required: false
+    default: 'false'
 
 outputs:
   job-id:
@@ -81,6 +93,8 @@ outputs:
     description: 'Percentage of direct dependencies on their latest version (0-100), populated when wait-for-result is true and scan completed'
   sbom-file:
     description: 'Absolute path of the downloaded SBOM, empty when sbom-format is set but no SBOM could be downloaded'
+  vex-file:
+    description: 'Absolute path of the downloaded VEX, empty when vex is true but no VEX could be downloaded'
 
 runs:
   using: 'node24'

@@ -52,10 +52,24 @@ const DEFAULT_SBOM_PATHS: Record<SbomFormat, string> = {
   cyclonedx: 'deptools-sbom.cdx.json',
   spdx: 'deptools-sbom.spdx.json',
 }
+const DEFAULT_VEX_PATH = 'deptools-vex.cdx.json'
 // A 409 means "not ready yet": retried after Retry-After, a few times at most. A 410 is final.
-const SBOM_MAX_ATTEMPTS = 6
-const SBOM_DEFAULT_RETRY_SECONDS = 10
-const SBOM_MAX_RETRY_SECONDS = 60
+// Same for both documents (SBOM, VEX)
+const DOWNLOAD_MAX_ATTEMPTS = 6
+const DOWNLOAD_DEFAULT_RETRY_SECONDS = 10
+const DOWNLOAD_MAX_RETRY_SECONDS = 60
+
+/** One document of a completed scan to download: the SBOM or the pre-filled VEX. */
+interface DocumentDownload {
+  /** In messages: SBOM, VEX */
+  name: 'SBOM' | 'VEX'
+  /** In the success line: `SBOM (cyclonedx)`, `VEX` */
+  label: string
+  url: string
+  target: string
+  /** The output that receives the path once written */
+  output: 'sbom-file' | 'vex-file'
+}
 
 async function run(): Promise<void> {
   const projectId = core.getInput('project-id', { required: true })
@@ -71,6 +85,9 @@ async function run(): Promise<void> {
   const sbomFormatInput = core.getInput('sbom-format').trim().toLowerCase()
   const sbomPathInput = core.getInput('sbom-path').trim()
   const failOnSbomError = core.getInput('fail-on-sbom-error') === 'true'
+  const vex = core.getInput('vex') === 'true'
+  const vexPathInput = core.getInput('vex-path').trim()
+  const failOnVexError = core.getInput('fail-on-vex-error') === 'true'
   const artifactInput = core.getInput('artifact').trim()
   const artifactUrl = core.getInput('artifact-url').trim()
 
@@ -89,11 +106,22 @@ async function run(): Promise<void> {
         sbomPathInput || DEFAULT_SBOM_PATHS[sbomFormat]
       )
     : null
+  const vexPath = vex
+    ? path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), vexPathInput || DEFAULT_VEX_PATH)
+    : null
+  // The second download would overwrite the first
+  if (sbomPath && vexPath && sbomPath === vexPath) {
+    core.setFailed(`sbom-path and vex-path name the same file: ${vexPath}`)
+    return
+  }
 
-  // There is no SBOM without waiting for the analysis to complete
-  const waitForResult = waitInput || sbomFormat !== null
+  // There is no SBOM nor VEX without waiting for the analysis to complete
+  const waitForResult = waitInput || sbomFormat !== null || vex
   if (sbomFormat && !waitInput) {
     core.info('sbom-format is set: waiting for the scan result to download the SBOM.')
+  }
+  if (vex && !waitInput) {
+    core.info('vex is set: waiting for the scan result to download the VEX.')
   }
 
   const client = new http.HttpClient('deptools-scan-action', [], {
@@ -137,6 +165,13 @@ async function run(): Promise<void> {
           'Deptools dashboard and download its SBOM there. It describes the branch at that time.'
       )
       core.setOutput('sbom-file', '')
+    }
+    if (vex) {
+      core.warning(
+        'No VEX for this build: no scan ran. Once the cooldown is over, run a scan from the ' +
+          'Deptools dashboard and download its VEX there. It lists the vulnerabilities known at that time.'
+      )
+      core.setOutput('vex-file', '')
     }
     core.setOutput('status', 'skipped')
     return
@@ -182,6 +217,7 @@ async function run(): Promise<void> {
     if (status === 'failed') {
       core.setOutput('status', 'failed')
       if (sbomFormat) core.setOutput('sbom-file', '')
+      if (vex) core.setOutput('vex-file', '')
       core.setFailed(`Deptools scan failed: ${error ?? 'unknown error'}`)
       return
     }
@@ -189,15 +225,39 @@ async function run(): Promise<void> {
     if (status === 'completed') {
       core.setOutput('status', 'completed')
 
-      // Before the gates: a build that fails a gate is precisely one whose SBOM is wanted
+      // Before the gates: a build that fails a gate is precisely one whose SBOM and VEX are
+      // wanted. Each on its own: a missing SBOM does not keep the VEX from being fetched
       if (sbomFormat && sbomPath) {
-        const sbomError = await downloadSbom(client, apiUrl, jobId, sbomFormat, sbomPath)
+        const sbomError = await downloadDocument(client, {
+          name: 'SBOM',
+          label: `SBOM (${sbomFormat})`,
+          url: `${apiUrl}/v1/scans/${jobId}/sbom?format=${sbomFormat}`,
+          target: sbomPath,
+          output: 'sbom-file',
+        })
         if (sbomError) {
           core.setOutput('sbom-file', '')
           if (failOnSbomError) {
             core.setFailed(sbomError)
           } else {
             core.warning(`${sbomError}. The scan succeeded, the job goes on (set fail-on-sbom-error: true to fail it).`)
+          }
+        }
+      }
+      if (vexPath) {
+        const vexError = await downloadDocument(client, {
+          name: 'VEX',
+          label: 'VEX',
+          url: `${apiUrl}/v1/scans/${jobId}/vex`,
+          target: vexPath,
+          output: 'vex-file',
+        })
+        if (vexError) {
+          core.setOutput('vex-file', '')
+          if (failOnVexError) {
+            core.setFailed(vexError)
+          } else {
+            core.warning(`${vexError}. The scan succeeded, the job goes on (set fail-on-vex-error: true to fail it).`)
           }
         }
       }
@@ -223,23 +283,21 @@ async function run(): Promise<void> {
   }
 
   if (sbomFormat) core.setOutput('sbom-file', '')
+  if (vex) core.setOutput('vex-file', '')
   core.setFailed(`Scan did not complete within ${timeout}s timeout.`)
 }
 
 /**
- * Download the SBOM of a completed scan to `target`. The HTTP status alone decides: 200 written,
- * 409 retried after Retry-After, anything else (410 for a failed scan or an unavailable result)
- * final. Written to a temporary file next to the target, then renamed, so a failed download never
- * leaves a truncated SBOM behind. Returns null on success, the reason otherwise.
+ * Download one document of a completed scan (SBOM or VEX) to its target. The HTTP status alone
+ * decides: 200 written, 409 retried after Retry-After, anything else (410 for a failed scan or an
+ * unavailable result) final. Written to a temporary file next to the target, then renamed, so a
+ * failed download never leaves a truncated document behind. Returns null on success, the reason
+ * otherwise.
  */
-async function downloadSbom(
+async function downloadDocument(
   client: http.HttpClient,
-  apiUrl: string,
-  jobId: string,
-  format: SbomFormat,
-  target: string
+  { name, label, url, target, output }: DocumentDownload
 ): Promise<string | null> {
-  const url = `${apiUrl}/v1/scans/${jobId}/sbom?format=${format}`
   const partial = `${target}.part-${process.pid}`
 
   for (let attempt = 1; ; attempt++) {
@@ -252,7 +310,7 @@ async function downloadSbom(
       retryAfterHeader = res.message.headers['retry-after']
       body = await res.readBody()
     } catch (err) {
-      return `Could not download the SBOM: ${err instanceof Error ? err.message : String(err)}`
+      return `Could not download the ${name}: ${err instanceof Error ? err.message : String(err)}`
     }
 
     if (statusCode === 200) {
@@ -263,24 +321,24 @@ async function downloadSbom(
         await fs.rename(partial, target)
       } catch (err) {
         await fs.rm(partial, { force: true })
-        return `Could not write the SBOM to ${target}: ${err instanceof Error ? err.message : String(err)}`
+        return `Could not write the ${name} to ${target}: ${err instanceof Error ? err.message : String(err)}`
       }
-      core.setOutput('sbom-file', target)
-      core.info(`SBOM (${format}) written to ${target}`)
+      core.setOutput(output, target)
+      core.info(`${label} written to ${target}`)
       return null
     }
 
-    if (statusCode === 409 && attempt < SBOM_MAX_ATTEMPTS) {
+    if (statusCode === 409 && attempt < DOWNLOAD_MAX_ATTEMPTS) {
       const seconds = parseInt(String(retryAfterHeader ?? ''), 10)
       const wait = Number.isFinite(seconds) && seconds > 0
-        ? Math.min(seconds, SBOM_MAX_RETRY_SECONDS)
-        : SBOM_DEFAULT_RETRY_SECONDS
-      core.info(`SBOM not ready yet — retrying in ${wait}s…`)
+        ? Math.min(seconds, DOWNLOAD_MAX_RETRY_SECONDS)
+        : DOWNLOAD_DEFAULT_RETRY_SECONDS
+      core.info(`${name} not ready yet — retrying in ${wait}s…`)
       await sleep(wait * 1000)
       continue
     }
 
-    return `SBOM not available (HTTP ${statusCode})${describeError(parseJson(body))}`
+    return `${name} not available (HTTP ${statusCode})${describeError(parseJson(body))}`
   }
 }
 

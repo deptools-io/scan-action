@@ -1,6 +1,6 @@
 # Deptools Scan Action
 
-GitHub Action to trigger a [Deptools](https://deptools.io) dependency scan from your CI pipeline, optionally gate the job on the result, and download the SBOM of the scan (CycloneDX 1.7 or SPDX 2.3).
+GitHub Action to trigger a [Deptools](https://deptools.io) dependency scan from your CI pipeline, optionally gate the job on the result, and download the SBOM of the scan (CycloneDX 1.7 or SPDX 2.3) and its pre-filled VEX (CycloneDX 1.7).
 
 ## Prerequisites
 
@@ -58,6 +58,27 @@ Set `sbom-format` to download the SBOM once the scan completes (this implies `wa
 ```
 
 `version` is written in the SBOM as the version of your product. Deptools scans the branch configured on the project, not the ref of the job: on a tag build, only pass the tag as `version` when the tag points at that branch, otherwise the SBOM would describe the branch under the tag's version.
+
+### Download the pre-filled VEX of every scan
+
+Set `vex: true` to also download the pre-filled VEX of the scan (CycloneDX 1.7), with or without the SBOM. It lists the vulnerabilities known on your components the day of the scan, with the same component references as the SBOM. Deptools fills in only what it knows from your build files: components reached only through test or development dependencies are marked `not_affected` (`code_not_present`), components the runtime environment provides and compile-only ones (Gradle `compileOnly`, which may run in production) carry a note, and every other vulnerability is left **without a status, for you to assess**. Deptools never states that a vulnerability is exploitable or not in your product. Import it in your vulnerability tool (Dependency-Track matches it on the advisory id) and complete it there. Rescan before you hand it over: a VEX is only as current as its scan.
+
+```yaml
+- uses: deptools-io/scan-action@v1
+  with:
+    project-id: ${{ vars.DEPTOOLS_PROJECT_ID }}
+    api-key: ${{ secrets.DEPTOOLS_API_KEY }}
+    sbom-format: cyclonedx
+    vex: true
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: sbom-and-vex
+    path: |
+      deptools-sbom.cdx.json
+      deptools-vex.cdx.json
+    if-no-files-found: warn
+```
 
 ### Put the hash of your build in the SBOM
 
@@ -119,6 +140,9 @@ jobs:
 | `sbom-format` | | — | Download the SBOM once the scan completes: `cyclonedx` or `spdx`. Implies `wait-for-result: true` |
 | `sbom-path` | | `deptools-sbom.cdx.json` / `deptools-sbom.spdx.json` | Where to write the SBOM, relative to the workspace (missing directories are created) |
 | `fail-on-sbom-error` | | `false` | Fail the job if the SBOM cannot be downloaded (otherwise a warning, since the scan succeeded) |
+| `vex` | | `false` | Download the pre-filled VEX once the scan completes, with or without `sbom-format`. Implies `wait-for-result: true` |
+| `vex-path` | | `deptools-vex.cdx.json` | Where to write the VEX, relative to the workspace (missing directories are created) |
+| `fail-on-vex-error` | | `false` | Fail the job if the VEX cannot be downloaded (otherwise a warning, since the scan succeeded) |
 | `artifact` | | — | Path of the file this job built, relative to the workspace. Its name and SHA-512 go in the SBOM for your product; the file is never sent. A missing file is a warning |
 | `artifact-url` | | — | Where that file can be downloaded, written in the SBOM |
 
@@ -133,12 +157,15 @@ jobs:
 | `commercial-use` | `true` if a strong copyleft license was detected (populated when `wait-for-result: true`) |
 | `direct-up-to-date` | Percentage of direct dependencies on their latest version (populated when `wait-for-result: true`) |
 | `sbom-file` | Absolute path of the downloaded SBOM; empty when `sbom-format` is set but no SBOM could be downloaded |
+| `vex-file` | Absolute path of the downloaded VEX; empty when `vex` is true but no VEX could be downloaded |
 
 ## Notes
 
 - When your plan's scan cooldown is active, the action exits with a warning (not a failure) and sets `status: skipped`. No scan ran, so there is no SBOM for that build (`sbom-file` is empty, even with `fail-on-sbom-error: true`): once the cooldown is over, run a scan from the dashboard and download its SBOM there. It describes the branch at that time, not the skipped commit.
-- An invalid `sbom-format` fails the job before any scan is triggered.
-- With `sbom-format`, the job waits for the scan like `wait-for-result: true`, up to `timeout` (300 s by default). A scan still running at the timeout fails the job: raise `timeout` for large projects.
+- When your plan's scan cooldown is active and `vex` is true, there is no VEX for that build either (`vex-file` is empty).
+- An invalid `sbom-format` fails the job before any scan is triggered, and so does a `vex-path` that names the same file as `sbom-path`.
+- The SBOM and the VEX are downloaded one after the other, each on its own: a missing SBOM does not keep the VEX from being fetched.
+- With `sbom-format` or `vex: true`, the job waits for the scan like `wait-for-result: true`, up to `timeout` (300 s by default). A scan still running at the timeout fails the job: raise `timeout` for large projects.
 - Quality gates (`fail-on-cvss`, `min-score`, `fail-on-strong-copyleft`, `min-up-to-date`) are only evaluated when `wait-for-result: true`.
 - If `min-up-to-date` is set but the project has no direct dependencies, the gate is skipped with a warning.
 - The `api-key` input is automatically masked in all logs.

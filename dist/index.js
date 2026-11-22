@@ -20309,9 +20309,10 @@ var DEFAULT_SBOM_PATHS = {
   cyclonedx: "deptools-sbom.cdx.json",
   spdx: "deptools-sbom.spdx.json"
 };
-var SBOM_MAX_ATTEMPTS = 6;
-var SBOM_DEFAULT_RETRY_SECONDS = 10;
-var SBOM_MAX_RETRY_SECONDS = 60;
+var DEFAULT_VEX_PATH = "deptools-vex.cdx.json";
+var DOWNLOAD_MAX_ATTEMPTS = 6;
+var DOWNLOAD_DEFAULT_RETRY_SECONDS = 10;
+var DOWNLOAD_MAX_RETRY_SECONDS = 60;
 async function run() {
   const projectId = getInput("project-id", { required: true });
   const apiKey = getInput("api-key", { required: true });
@@ -20326,6 +20327,9 @@ async function run() {
   const sbomFormatInput = getInput("sbom-format").trim().toLowerCase();
   const sbomPathInput = getInput("sbom-path").trim();
   const failOnSbomError = getInput("fail-on-sbom-error") === "true";
+  const vex = getInput("vex") === "true";
+  const vexPathInput = getInput("vex-path").trim();
+  const failOnVexError = getInput("fail-on-vex-error") === "true";
   const artifactInput = getInput("artifact").trim();
   const artifactUrl = getInput("artifact-url").trim();
   setSecret(apiKey);
@@ -20338,9 +20342,17 @@ async function run() {
     process.env.GITHUB_WORKSPACE ?? process.cwd(),
     sbomPathInput || DEFAULT_SBOM_PATHS[sbomFormat]
   ) : null;
-  const waitForResult = waitInput || sbomFormat !== null;
+  const vexPath = vex ? path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), vexPathInput || DEFAULT_VEX_PATH) : null;
+  if (sbomPath && vexPath && sbomPath === vexPath) {
+    setFailed(`sbom-path and vex-path name the same file: ${vexPath}`);
+    return;
+  }
+  const waitForResult = waitInput || sbomFormat !== null || vex;
   if (sbomFormat && !waitInput) {
     info("sbom-format is set: waiting for the scan result to download the SBOM.");
+  }
+  if (vex && !waitInput) {
+    info("vex is set: waiting for the scan result to download the VEX.");
   }
   const client = new HttpClient("deptools-scan-action", [], {
     headers: {
@@ -20373,6 +20385,12 @@ async function run() {
         "No SBOM for this build: no scan ran. Once the cooldown is over, run a scan from the Deptools dashboard and download its SBOM there. It describes the branch at that time."
       );
       setOutput("sbom-file", "");
+    }
+    if (vex) {
+      warning(
+        "No VEX for this build: no scan ran. Once the cooldown is over, run a scan from the Deptools dashboard and download its VEX there. It lists the vulnerabilities known at that time."
+      );
+      setOutput("vex-file", "");
     }
     setOutput("status", "skipped");
     return;
@@ -20407,19 +20425,43 @@ async function run() {
     if (status === "failed") {
       setOutput("status", "failed");
       if (sbomFormat) setOutput("sbom-file", "");
+      if (vex) setOutput("vex-file", "");
       setFailed(`Deptools scan failed: ${error2 ?? "unknown error"}`);
       return;
     }
     if (status === "completed") {
       setOutput("status", "completed");
       if (sbomFormat && sbomPath) {
-        const sbomError = await downloadSbom(client, apiUrl, jobId, sbomFormat, sbomPath);
+        const sbomError = await downloadDocument(client, {
+          name: "SBOM",
+          label: `SBOM (${sbomFormat})`,
+          url: `${apiUrl}/v1/scans/${jobId}/sbom?format=${sbomFormat}`,
+          target: sbomPath,
+          output: "sbom-file"
+        });
         if (sbomError) {
           setOutput("sbom-file", "");
           if (failOnSbomError) {
             setFailed(sbomError);
           } else {
             warning(`${sbomError}. The scan succeeded, the job goes on (set fail-on-sbom-error: true to fail it).`);
+          }
+        }
+      }
+      if (vexPath) {
+        const vexError = await downloadDocument(client, {
+          name: "VEX",
+          label: "VEX",
+          url: `${apiUrl}/v1/scans/${jobId}/vex`,
+          target: vexPath,
+          output: "vex-file"
+        });
+        if (vexError) {
+          setOutput("vex-file", "");
+          if (failOnVexError) {
+            setFailed(vexError);
+          } else {
+            warning(`${vexError}. The scan succeeded, the job goes on (set fail-on-vex-error: true to fail it).`);
           }
         }
       }
@@ -20442,10 +20484,10 @@ async function run() {
     }
   }
   if (sbomFormat) setOutput("sbom-file", "");
+  if (vex) setOutput("vex-file", "");
   setFailed(`Scan did not complete within ${timeout}s timeout.`);
 }
-async function downloadSbom(client, apiUrl, jobId, format, target) {
-  const url = `${apiUrl}/v1/scans/${jobId}/sbom?format=${format}`;
+async function downloadDocument(client, { name, label, url, target, output }) {
   const partial = `${target}.part-${process.pid}`;
   for (let attempt = 1; ; attempt++) {
     let statusCode;
@@ -20457,7 +20499,7 @@ async function downloadSbom(client, apiUrl, jobId, format, target) {
       retryAfterHeader = res.message.headers["retry-after"];
       body = await res.readBody();
     } catch (err) {
-      return `Could not download the SBOM: ${err instanceof Error ? err.message : String(err)}`;
+      return `Could not download the ${name}: ${err instanceof Error ? err.message : String(err)}`;
     }
     if (statusCode === 200) {
       try {
@@ -20466,20 +20508,20 @@ async function downloadSbom(client, apiUrl, jobId, format, target) {
         await import_node_fs.promises.rename(partial, target);
       } catch (err) {
         await import_node_fs.promises.rm(partial, { force: true });
-        return `Could not write the SBOM to ${target}: ${err instanceof Error ? err.message : String(err)}`;
+        return `Could not write the ${name} to ${target}: ${err instanceof Error ? err.message : String(err)}`;
       }
-      setOutput("sbom-file", target);
-      info(`SBOM (${format}) written to ${target}`);
+      setOutput(output, target);
+      info(`${label} written to ${target}`);
       return null;
     }
-    if (statusCode === 409 && attempt < SBOM_MAX_ATTEMPTS) {
+    if (statusCode === 409 && attempt < DOWNLOAD_MAX_ATTEMPTS) {
       const seconds = parseInt(String(retryAfterHeader ?? ""), 10);
-      const wait = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, SBOM_MAX_RETRY_SECONDS) : SBOM_DEFAULT_RETRY_SECONDS;
-      info(`SBOM not ready yet \u2014 retrying in ${wait}s\u2026`);
+      const wait = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, DOWNLOAD_MAX_RETRY_SECONDS) : DOWNLOAD_DEFAULT_RETRY_SECONDS;
+      info(`${name} not ready yet \u2014 retrying in ${wait}s\u2026`);
       await sleep(wait * 1e3);
       continue;
     }
-    return `SBOM not available (HTTP ${statusCode})${describeError(parseJson(body))}`;
+    return `${name} not available (HTTP ${statusCode})${describeError(parseJson(body))}`;
   }
 }
 function parseJson(text) {
